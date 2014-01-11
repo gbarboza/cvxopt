@@ -127,7 +127,8 @@ static PyObject *simplex(PyObject *self, PyObject *args,
 {
     matrix *c, *h, *b=NULL, *x=NULL, *z=NULL, *y=NULL;
     PyObject *G, *A=NULL, *t=NULL, *param, *key, *value;
-    LPX *lp;
+    glp_prob *prob;
+    glp_smcp parm;
     int m, n, p, i, j, k, nnz, nnzmax, *rn=NULL, *cn=NULL, param_id;
     int_t pos=0;
     double *a=NULL, val;
@@ -144,7 +145,7 @@ static PyObject *simplex(PyObject *self, PyObject *args,
 
     if ((Matrix_Check(G) && MAT_ID(G) != DOUBLE) ||
         (SpMatrix_Check(G) && SP_ID(G) != DOUBLE) ||
-        (!Matrix_Check(G) && !SpMatrix_Check(G))){
+        (!Matrix_Check(G) && !SpMatrix_Check(G))) {
         PyErr_SetString(PyExc_TypeError, "G must be a 'd' matrix");
         return NULL;
     }
@@ -154,22 +155,22 @@ static PyObject *simplex(PyObject *self, PyObject *args,
         err_p_int("n");
 
     if (!Matrix_Check(h) || h->id != DOUBLE) err_dbl_mtrx("h");
-    if (h->nrows != m || h->ncols != 1){
+    if (h->nrows != m || h->ncols != 1) {
         PyErr_SetString(PyExc_ValueError, "incompatible dimensions");
         return NULL;
     }
 
-    if (A){
+    if (A) {
         if ((Matrix_Check(A) && MAT_ID(A) != DOUBLE) ||
             (SpMatrix_Check(A) && SP_ID(A) != DOUBLE) ||
-            (!Matrix_Check(A) && !SpMatrix_Check(A))){
+            (!Matrix_Check(A) && !SpMatrix_Check(A))) {
                 PyErr_SetString(PyExc_ValueError, "A must be a dense "
                     "'d' matrix or a general sparse matrix");
                 return NULL;
 	}
         if ((p = Matrix_Check(A) ? MAT_NROWS(A) : SP_NROWS(A)) < 0)
             err_p_int("p");
-        if ((Matrix_Check(A) ? MAT_NCOLS(A) : SP_NCOLS(A)) != n){
+        if ((Matrix_Check(A) ? MAT_NCOLS(A) : SP_NCOLS(A)) != n) {
             PyErr_SetString(PyExc_ValueError, "incompatible "
                 "dimensions");
             return NULL;
@@ -178,23 +179,24 @@ static PyObject *simplex(PyObject *self, PyObject *args,
     else p = 0;
 
     if (b && (!Matrix_Check(b) || b->id != DOUBLE)) err_dbl_mtrx("b");
-    if ((b && (b->nrows != p || b->ncols != 1)) || (!b && p !=0 )){
+    if ((b && (b->nrows != p || b->ncols != 1)) || (!b && p !=0 )) {
         PyErr_SetString(PyExc_ValueError, "incompatible dimensions");
         return NULL;
     }
 
-    lp = lpx_create_prob();
-    lpx_add_rows(lp, m+p);
-    lpx_add_cols(lp, n);
+    prob = glp_create_prob();
+    glp_init_smcp(&parm);
+    glp_add_rows(prob, m+p);
+    glp_add_cols(prob, n);
 
-    for (i=0; i<n; i++){
-        lpx_set_obj_coef(lp, i+1, MAT_BUFD(c)[i]);
-        lpx_set_col_bnds(lp, i+1, LPX_FR, 0.0, 0.0);
+    for (i=0; i<n; i++) {
+        glp_set_obj_coef(prob, i+1, MAT_BUFD(c)[i]);
+        glp_set_col_bnds(prob, i+1, GLP_FR, 0.0, 0.0);
     }
     for (i=0; i<m; i++)
-        lpx_set_row_bnds(lp, i+1, LPX_UP, 0.0, MAT_BUFD(h)[i]);
+        glp_set_row_bnds(prob, i+1, GLP_UP, 0.0, MAT_BUFD(h)[i]);
     for (i=0; i<p; i++)
-        lpx_set_row_bnds(lp, i+m+1, LPX_FX, MAT_BUFD(b)[i],
+        glp_set_row_bnds(prob, i+m+1, GLP_FX, MAT_BUFD(b)[i],
             MAT_BUFD(b)[i]);
 
     nnzmax = (SpMatrix_Check(G) ? SP_NNZ(G) : m*n ) +
@@ -202,15 +204,15 @@ static PyObject *simplex(PyObject *self, PyObject *args,
     a = (double *) calloc(nnzmax+1, sizeof(double));
     rn = (int *) calloc(nnzmax+1, sizeof(int));
     cn = (int *) calloc(nnzmax+1, sizeof(int));
-    if (!a || !rn || !cn){
-        free(a);  free(rn);  free(cn);  lpx_delete_prob(lp);
+    if (!a || !rn || !cn) {
+        free(a);  free(rn);  free(cn);  glp_delete_prob(prob);
         return PyErr_NoMemory();
     }
 
     nnz = 0;
     if (SpMatrix_Check(G)) {
         for (j=0; j<n; j++) for (k=SP_COL(G)[j]; k<SP_COL(G)[j+1]; k++)
-            if ((val = SP_VALD(G)[k]) != 0.0){
+            if ((val = SP_VALD(G)[k]) != 0.0) {
                 a[1+nnz] = val;
                 rn[1+nnz] = SP_ROW(G)[k]+1;
                 cn[1+nnz] = j+1;
@@ -218,16 +220,16 @@ static PyObject *simplex(PyObject *self, PyObject *args,
             }
     }
     else for (j=0; j<n; j++) for (i=0; i<m; i++)
-        if ((val = MAT_BUFD(G)[i+j*m]) != 0.0){
+        if ((val = MAT_BUFD(G)[i+j*m]) != 0.0) {
             a[1+nnz] = val;
             rn[1+nnz] = i+1;
             cn[1+nnz] = j+1;
             nnz++;
         }
 
-    if (A && SpMatrix_Check(A)){
+    if (A && SpMatrix_Check(A)) {
         for (j=0; j<n; j++) for (k=SP_COL(A)[j]; k<SP_COL(A)[j+1]; k++)
-            if ((val = SP_VALD(A)[k]) != 0.0){
+            if ((val = SP_VALD(A)[k]) != 0.0) {
                 a[1+nnz] = val;
                 rn[1+nnz] = m+SP_ROW(A)[k]+1;
                 cn[1+nnz] = j+1;
@@ -235,24 +237,24 @@ static PyObject *simplex(PyObject *self, PyObject *args,
             }
     }
     else for (j=0; j<n; j++) for (i=0; i<p; i++)
-        if ((val = MAT_BUFD(A)[i+j*p]) != 0.0){
+        if ((val = MAT_BUFD(A)[i+j*p]) != 0.0) {
             a[1+nnz] = val;
             rn[1+nnz] = m+i+1;
             cn[1+nnz] = j+1;
             nnz++;
         }
 
-    lpx_load_matrix(lp, nnz, rn, cn, a);
+    glp_load_matrix(prob, nnz, rn, cn, a);
     free(rn);  free(cn);  free(a);
 
-    if (!(t = PyTuple_New(A ? 4 : 3))){
-        lpx_delete_prob(lp);
+    if (!(t = PyTuple_New(A ? 4 : 3))) {
+        glp_delete_prob(prob);
         return PyErr_NoMemory();
     }
 
     if (!(param = PyObject_GetAttrString(glpk_module, "options"))
-        || !PyDict_Check(param)){
-            lpx_delete_prob(lp);
+        || !PyDict_Check(param)) {
+            glp_delete_prob(prob);
             PyErr_SetString(PyExc_AttributeError,
                 "missing glpk.options dictionary");
             return NULL;
@@ -262,35 +264,36 @@ static PyObject *simplex(PyObject *self, PyObject *args,
 #if PY_MAJOR_VERSION >= 3
         if ((PyUnicode_Check(key)) && 
             get_param_idx(_PyUnicode_AsString(key), &param_id, 
-            &param_type)){
+            &param_type)) {
             keystr = _PyUnicode_AsString(key);
 #else
         if ((keystr = PyString_AsString(key)) && get_param_idx(keystr,
-            &param_id, &param_type)){
+            &param_id, &param_type)) {
 #endif
-	    if (param_type == 'i'){
+
+	    if (param_type == 'i') {
 #if PY_MAJOR_VERSION >= 3
-	        if (!PyLong_Check(value)){
+	        if (!PyLong_Check(value)) {
 #else
-	        if (!PyInt_Check(value)){
+	        if (!PyInt_Check(value)) {
 #endif
                     sprintf(err_str, "invalid value for integer "
                         "GLPK parameter: %-.20s", keystr);
                     PyErr_SetString(PyExc_ValueError, err_str);
-	            lpx_delete_prob(lp);
+	            glp_delete_prob(prob);
 	            Py_DECREF(param);
                     return NULL;
 	        }
                 if (!strcmp("LPX_K_PRESOL", keystr) &&
 #if PY_MAJOR_VERSION >= 3
-                    PyLong_AS_LONG(value) != 1){
+                    PyLong_AS_LONG(value) != 1) {
 #else
-                    PyInt_AS_LONG(value) != 1){
+                    PyInt_AS_LONG(value) != 1) {
 #endif
                     PyErr_Warn(PyExc_UserWarning, "ignoring value of "
                         "GLPK parameter 'LPX_K_PRESOL'");
                 }
-                else lpx_set_int_parm(lp, param_id,
+                else lpx_set_int_parm(prob, param_id,
 #if PY_MAJOR_VERSION >= 3
                     PyLong_AS_LONG(value));
 #else
@@ -299,37 +302,37 @@ static PyObject *simplex(PyObject *self, PyObject *args,
 	    }
 	    else {
 #if PY_MAJOR_VERSION >= 3
-	        if (!PyLong_Check(value) && !PyFloat_Check(value)){
+	        if (!PyLong_Check(value) && !PyFloat_Check(value)) {
 #else
-	        if (!PyInt_Check(value) && !PyFloat_Check(value)){
+	        if (!PyInt_Check(value) && !PyFloat_Check(value)) {
 #endif
                     sprintf(err_str, "invalid value for floating point "
                         "GLPK parameter: %-.20s", keystr);
                     PyErr_SetString(PyExc_ValueError, err_str);
-	            lpx_delete_prob(lp);
+	            glp_delete_prob(prob);
 	            Py_DECREF(param);
                     return NULL;
 	        }
-	        lpx_set_real_parm(lp, param_id,
+	        lpx_set_real_parm(prob, param_id,
                     PyFloat_AsDouble(value));
 	    }
     }
-    lpx_set_int_parm(lp, LPX_K_PRESOL, 1);
+    lpx_set_int_parm(prob, LPX_K_PRESOL, 1);
     Py_DECREF(param);
 
-    switch (lpx_simplex(lp)){
+    switch (glp_simplex(prob, &parm)) {
 
-        case LPX_E_OK:
+        case 0:
 
             x = (matrix *) Matrix_New(n,1,DOUBLE);
             z = (matrix *) Matrix_New(m,1,DOUBLE);
             if (A) y = (matrix *) Matrix_New(p,1,DOUBLE);
-            if (!x || !z || (A && !y)){
+            if (!x || !z || (A && !y)) {
                 Py_XDECREF(x);
                 Py_XDECREF(z);
                 Py_XDECREF(y);
                 Py_XDECREF(t);
-                lpx_delete_prob(lp);
+                glp_delete_prob(prob);
                 return PyErr_NoMemory();
             }
 
@@ -341,23 +344,23 @@ static PyObject *simplex(PyObject *self, PyObject *args,
 #endif
 
             for (i=0; i<n; i++)
-                MAT_BUFD(x)[i] = lpx_get_col_prim(lp, i+1);
+                MAT_BUFD(x)[i] = glp_get_col_prim(prob, i+1);
             PyTuple_SET_ITEM(t, 1, (PyObject *) x);
 
             for (i=0; i<m; i++)
-                MAT_BUFD(z)[i] = -lpx_get_row_dual(lp, i+1);
+                MAT_BUFD(z)[i] = -glp_get_row_dual(prob, i+1);
             PyTuple_SET_ITEM(t, 2, (PyObject *) z);
 
-            if (A){
+            if (A) {
                 for (i=0; i<p; i++)
-                    MAT_BUFD(y)[i] = -lpx_get_row_dual(lp, m+i+1);
+                    MAT_BUFD(y)[i] = -glp_get_row_dual(prob, m+i+1);
                 PyTuple_SET_ITEM(t, 3, (PyObject *) y);
             }
 
-            lpx_delete_prob(lp);
+            glp_delete_prob(prob);
             return (PyObject *) t;
 
-        case LPX_E_NOPFS:
+        case GLP_ENOPFS:
 
             PyTuple_SET_ITEM(t, 0, (PyObject *)
 #if PY_MAJOR_VERSION >= 3
@@ -367,7 +370,7 @@ static PyObject *simplex(PyObject *self, PyObject *args,
 #endif
             break;
 
-        case LPX_E_NODFS:
+        case GLP_ENODFS:
 
             PyTuple_SET_ITEM(t, 0, (PyObject *)
 #if PY_MAJOR_VERSION >= 3
@@ -387,7 +390,7 @@ static PyObject *simplex(PyObject *self, PyObject *args,
 #endif
     }
 
-    lpx_delete_prob(lp);
+    glp_delete_prob(prob);
 
     PyTuple_SET_ITEM(t, 1, Py_BuildValue(""));
     PyTuple_SET_ITEM(t, 2, Py_BuildValue(""));
@@ -428,7 +431,8 @@ static PyObject *integer(PyObject *self, PyObject *args,
     matrix *c, *h, *b=NULL, *x=NULL;
     PyObject *G, *A=NULL, *IntSet=NULL, *BinSet = NULL;
     PyObject *t=NULL, *param, *key, *value;
-    LPX *lp;
+    glp_prob *prob;
+    glp_iocp parm;
     int m, n, p, i, j, k, nnz, nnzmax, *rn=NULL, *cn=NULL, param_id;
     int_t pos=0;
     double *a=NULL, val;
@@ -445,7 +449,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 
     if ((Matrix_Check(G) && MAT_ID(G) != DOUBLE) ||
         (SpMatrix_Check(G) && SP_ID(G) != DOUBLE) ||
-        (!Matrix_Check(G) && !SpMatrix_Check(G))){
+        (!Matrix_Check(G) && !SpMatrix_Check(G))) {
         PyErr_SetString(PyExc_TypeError, "G must be a 'd' matrix");
         return NULL;
     }
@@ -455,22 +459,22 @@ static PyObject *integer(PyObject *self, PyObject *args,
         err_p_int("n");
 
     if (!Matrix_Check(h) || h->id != DOUBLE) err_dbl_mtrx("h");
-    if (h->nrows != m || h->ncols != 1){
+    if (h->nrows != m || h->ncols != 1) {
         PyErr_SetString(PyExc_ValueError, "incompatible dimensions");
         return NULL;
     }
 
-    if (A){
+    if (A) {
         if ((Matrix_Check(A) && MAT_ID(A) != DOUBLE) ||
             (SpMatrix_Check(A) && SP_ID(A) != DOUBLE) ||
-            (!Matrix_Check(A) && !SpMatrix_Check(A))){
+            (!Matrix_Check(A) && !SpMatrix_Check(A))) {
                 PyErr_SetString(PyExc_ValueError, "A must be a dense "
                     "'d' matrix or a general sparse matrix");
                 return NULL;
 	}
         if ((p = Matrix_Check(A) ? MAT_NROWS(A) : SP_NROWS(A)) < 0)
             err_p_int("p");
-        if ((Matrix_Check(A) ? MAT_NCOLS(A) : SP_NCOLS(A)) != n){
+        if ((Matrix_Check(A) ? MAT_NCOLS(A) : SP_NCOLS(A)) != n) {
             PyErr_SetString(PyExc_ValueError, "incompatible "
                 "dimensions");
             return NULL;
@@ -479,7 +483,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
     else p = 0;
 
     if (b && (!Matrix_Check(b) || b->id != DOUBLE)) err_dbl_mtrx("b");
-    if ((b && (b->nrows != p || b->ncols != 1)) || (!b && p !=0 )){
+    if ((b && (b->nrows != p || b->ncols != 1)) || (!b && p !=0 )) {
         PyErr_SetString(PyExc_ValueError, "incompatible dimensions");
         return NULL;
     }
@@ -490,18 +494,19 @@ static PyObject *integer(PyObject *self, PyObject *args,
     if ((BinSet) && (!PyAnySet_Check(BinSet)))
       PY_ERR_TYPE("invalid binary index set");
 
-    lp = lpx_create_prob();
-    lpx_add_rows(lp, m+p);
-    lpx_add_cols(lp, n);
+    prob = glp_create_prob();
+    glp_init_iocp(&parm);
+    glp_add_rows(prob, m+p);
+    glp_add_cols(prob, n);
 
-    for (i=0; i<n; i++){
-        lpx_set_obj_coef(lp, i+1, MAT_BUFD(c)[i]);
-        lpx_set_col_bnds(lp, i+1, LPX_FR, 0.0, 0.0);
+    for (i=0; i<n; i++) {
+        glp_set_obj_coef(prob, i+1, MAT_BUFD(c)[i]);
+        glp_set_col_bnds(prob, i+1, GLP_FR, 0.0, 0.0);
     }
     for (i=0; i<m; i++)
-        lpx_set_row_bnds(lp, i+1, LPX_UP, 0.0, MAT_BUFD(h)[i]);
+        glp_set_row_bnds(prob, i+1, GLP_UP, 0.0, MAT_BUFD(h)[i]);
     for (i=0; i<p; i++)
-        lpx_set_row_bnds(lp, i+m+1, LPX_FX, MAT_BUFD(b)[i],
+        glp_set_row_bnds(prob, i+m+1, GLP_FX, MAT_BUFD(b)[i],
             MAT_BUFD(b)[i]);
 
     nnzmax = (SpMatrix_Check(G) ? SP_NNZ(G) : m*n ) +
@@ -509,15 +514,15 @@ static PyObject *integer(PyObject *self, PyObject *args,
     a = (double *) calloc(nnzmax+1, sizeof(double));
     rn = (int *) calloc(nnzmax+1, sizeof(int));
     cn = (int *) calloc(nnzmax+1, sizeof(int));
-    if (!a || !rn || !cn){
-        free(a);  free(rn);  free(cn);  lpx_delete_prob(lp);
+    if (!a || !rn || !cn) {
+        free(a);  free(rn);  free(cn);  glp_delete_prob(prob);
         return PyErr_NoMemory();
     }
 
     nnz = 0;
     if (SpMatrix_Check(G)) {
         for (j=0; j<n; j++) for (k=SP_COL(G)[j]; k<SP_COL(G)[j+1]; k++)
-            if ((val = SP_VALD(G)[k]) != 0.0){
+            if ((val = SP_VALD(G)[k]) != 0.0) {
                 a[1+nnz] = val;
                 rn[1+nnz] = SP_ROW(G)[k]+1;
                 cn[1+nnz] = j+1;
@@ -525,16 +530,16 @@ static PyObject *integer(PyObject *self, PyObject *args,
             }
     }
     else for (j=0; j<n; j++) for (i=0; i<m; i++)
-        if ((val = MAT_BUFD(G)[i+j*m]) != 0.0){
+        if ((val = MAT_BUFD(G)[i+j*m]) != 0.0) {
             a[1+nnz] = val;
             rn[1+nnz] = i+1;
             cn[1+nnz] = j+1;
             nnz++;
         }
 
-    if (A && SpMatrix_Check(A)){
+    if (A && SpMatrix_Check(A)) {
         for (j=0; j<n; j++) for (k=SP_COL(A)[j]; k<SP_COL(A)[j+1]; k++)
-            if ((val = SP_VALD(A)[k]) != 0.0){
+            if ((val = SP_VALD(A)[k]) != 0.0) {
                 a[1+nnz] = val;
                 rn[1+nnz] = m+SP_ROW(A)[k]+1;
                 cn[1+nnz] = j+1;
@@ -542,24 +547,24 @@ static PyObject *integer(PyObject *self, PyObject *args,
             }
     }
     else for (j=0; j<n; j++) for (i=0; i<p; i++)
-        if ((val = MAT_BUFD(A)[i+j*p]) != 0.0){
+        if ((val = MAT_BUFD(A)[i+j*p]) != 0.0) {
             a[1+nnz] = val;
             rn[1+nnz] = m+i+1;
             cn[1+nnz] = j+1;
             nnz++;
         }
 
-    lpx_load_matrix(lp, nnz, rn, cn, a);
+    glp_load_matrix(prob, nnz, rn, cn, a);
     free(rn);  free(cn);  free(a);
 
     if (!(t = PyTuple_New(2))) {
-        lpx_delete_prob(lp);
+        glp_delete_prob(prob);
         return PyErr_NoMemory();
     }
 
     if (!(param = PyObject_GetAttrString(glpk_module, "options"))
-        || !PyDict_Check(param)){
-            lpx_delete_prob(lp);
+        || !PyDict_Check(param)) {
+            glp_delete_prob(prob);
             PyErr_SetString(PyExc_AttributeError,
                 "missing glpk.options dictionary");
             return NULL;
@@ -568,58 +573,58 @@ static PyObject *integer(PyObject *self, PyObject *args,
     while (PyDict_Next(param, &pos, &key, &value))
 #if PY_MAJOR_VERSION >= 3
         if ((PyUnicode_Check(key)) && (keystr = PyUnicode_AS_DATA(key)) 
-            && get_param_idx(keystr, &param_id, &param_type)){
+            && get_param_idx(keystr, &param_id, &param_type)) {
 #else
         if ((keystr = PyString_AsString(key)) && get_param_idx(keystr,
-            &param_id, &param_type)){
+            &param_id, &param_type)) {
 #endif
-	    if (param_type == 'i'){
+	    if (param_type == 'i') {
 #if PY_MAJOR_VERSION >= 3
-	        if (!PyLong_Check(value)){
+	        if (!PyLong_Check(value)) {
 #else
-	        if (!PyInt_Check(value)){
+	        if (!PyInt_Check(value)) {
 #endif
                     sprintf(err_str, "invalid value for integer "
                         "GLPK parameter: %-.20s", keystr);
                     PyErr_SetString(PyExc_ValueError, err_str);
-	            lpx_delete_prob(lp);
+	            glp_delete_prob(prob);
 	            Py_DECREF(param);
                     return NULL;
 	        }
                 if (!strcmp("LPX_K_PRESOL", keystr) &&
 #if PY_MAJOR_VERSION >= 3
-                    PyLong_AS_LONG(value) != 1){
+                    PyLong_AS_LONG(value) != 1) {
 #else
-                    PyInt_AS_LONG(value) != 1){
+                    PyInt_AS_LONG(value) != 1) {
 #endif
                     PyErr_Warn(PyExc_UserWarning, "ignoring value of "
                         "GLPK parameter 'LPX_K_PRESOL'");
                 }
                 else 
 #if PY_MAJOR_VERSION >= 3
-                    lpx_set_int_parm(lp, param_id, PyLong_AS_LONG(value));
+                    lpx_set_int_parm(prob, param_id, PyLong_AS_LONG(value));
 #else
-                    lpx_set_int_parm(lp, param_id, PyInt_AS_LONG(value));
+                    lpx_set_int_parm(prob, param_id, PyInt_AS_LONG(value));
 #endif
 	    }
 	    else {
 #if PY_MAJOR_VERSION >= 3
-	        if (!PyLong_Check(value) && !PyFloat_Check(value)){
+	        if (!PyLong_Check(value) && !PyFloat_Check(value)) {
 #else
-	        if (!PyInt_Check(value) && !PyFloat_Check(value)){
+	        if (!PyInt_Check(value) && !PyFloat_Check(value)) {
 #endif
                     sprintf(err_str, "invalid value for floating point "
                         "GLPK parameter: %-.20s", keystr);
                     PyErr_SetString(PyExc_ValueError, err_str);
-	            lpx_delete_prob(lp);
+	            glp_delete_prob(prob);
 	            Py_DECREF(param);
                     return NULL;
 	        }
-	        lpx_set_real_parm(lp, param_id,
+	        lpx_set_real_parm(prob, param_id,
                     PyFloat_AsDouble(value));
 	    }
     }
-    lpx_set_int_parm(lp, LPX_K_PRESOL, 1);
+    lpx_set_int_parm(prob, LPX_K_PRESOL, 1);
     Py_DECREF(param);
 
     if (IntSet) {
@@ -633,7 +638,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #else
 	if (!PyInt_Check(tmp)) {
 #endif
-	  lpx_delete_prob(lp);
+	  glp_delete_prob(prob);
 	  Py_DECREF(iter);
 	  PY_ERR_TYPE("non-integer element in I");
 	}
@@ -643,11 +648,11 @@ static PyObject *integer(PyObject *self, PyObject *args,
 	int k = PyInt_AS_LONG(tmp);
 #endif
 	if ((k < 0) || (k >= n)) {
-	  lpx_delete_prob(lp);
+	  glp_delete_prob(prob);
 	  Py_DECREF(iter);
 	  PY_ERR(PyExc_IndexError, "index element out of range in I");
 	}
-	glp_set_col_kind(lp, k+1, GLP_IV);
+	glp_set_col_kind(prob, k+1, GLP_IV);
       }
 
       Py_DECREF(iter);
@@ -664,7 +669,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #else
 	if (!PyInt_Check(tmp)) {
 #endif
-	  lpx_delete_prob(lp);
+	  glp_delete_prob(prob);
 	  Py_DECREF(iter);
 	  PY_ERR_TYPE("non-binary element in I");
 	}
@@ -674,11 +679,11 @@ static PyObject *integer(PyObject *self, PyObject *args,
 	int k = PyInt_AS_LONG(tmp);
 #endif
 	if ((k < 0) || (k >= n)) {
-	  lpx_delete_prob(lp);
+	  glp_delete_prob(prob);
 	  Py_DECREF(iter);
 	  PY_ERR(PyExc_IndexError, "index element out of range in B");
 	}
-	glp_set_col_kind(lp, k+1, GLP_BV);
+	glp_set_col_kind(prob, k+1, GLP_BV);
       }
 
       Py_DECREF(iter);
@@ -687,14 +692,14 @@ static PyObject *integer(PyObject *self, PyObject *args,
 
 
 
-    switch (lpx_intopt(lp)){
+    switch (glp_intopt(prob, &parm)) {
 
-        case LPX_E_OK:
+        case 0:
 
             x = (matrix *) Matrix_New(n,1,DOUBLE);
             if (!x) {
                 Py_XDECREF(t);
-                lpx_delete_prob(lp);
+                glp_delete_prob(prob);
                 return PyErr_NoMemory();
             }
             PyTuple_SET_ITEM(t, 0, (PyObject *)
@@ -705,18 +710,18 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #endif
 
             for (i=0; i<n; i++)
-                MAT_BUFD(x)[i] = lpx_mip_col_val(lp, i+1);
+                MAT_BUFD(x)[i] = glp_mip_col_val(prob, i+1);
             PyTuple_SET_ITEM(t, 1, (PyObject *) x);
 
-            lpx_delete_prob(lp);
+            glp_delete_prob(prob);
             return (PyObject *) t;
 
-        case LPX_E_TMLIM:
+        case GLP_ETMLIM:
 
             x = (matrix *) Matrix_New(n,1,DOUBLE);
             if (!x) {
                 Py_XDECREF(t);
-                lpx_delete_prob(lp);
+                glp_delete_prob(prob);
                 return PyErr_NoMemory();
             }
             PyTuple_SET_ITEM(t, 0, (PyObject *)
@@ -727,14 +732,14 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #endif
 
             for (i=0; i<n; i++)
-                MAT_BUFD(x)[i] = lpx_mip_col_val(lp, i+1);
+                MAT_BUFD(x)[i] = glp_mip_col_val(prob, i+1);
             PyTuple_SET_ITEM(t, 1, (PyObject *) x);
 
-            lpx_delete_prob(lp);
+            glp_delete_prob(prob);
             return (PyObject *) t;
 
 
-        case LPX_E_FAULT:
+        case GLP_EBOUND:
             PyTuple_SET_ITEM(t, 0, (PyObject *)
 #if PY_MAJOR_VERSION >= 3
                 PyUnicode_FromString("invalid MIP formulation"));
@@ -743,7 +748,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #endif
             break;
 
-	case LPX_E_NOPFS:
+      	case GLP_ENOPFS:
             PyTuple_SET_ITEM(t, 0, (PyObject *)
 #if PY_MAJOR_VERSION >= 3
                 PyUnicode_FromString("primal infeasible"));
@@ -752,8 +757,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #endif
             break;
 
-	case LPX_E_NODFS:
-
+      	case GLP_ENODFS:
             PyTuple_SET_ITEM(t, 0, (PyObject *)
 #if PY_MAJOR_VERSION >= 3
                 PyUnicode_FromString("dual infeasible"));
@@ -762,8 +766,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #endif
             break;
 
-        case LPX_E_ITLIM:
-
+        case GLP_EITLIM:
             PyTuple_SET_ITEM(t, 0, (PyObject *)
 #if PY_MAJOR_VERSION >= 3
                 PyUnicode_FromString("maxiters exceeded"));
@@ -772,19 +775,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #endif
             break;
 
-	case LPX_E_SING:
-
-            PyTuple_SET_ITEM(t, 0, (PyObject *)
-#if PY_MAJOR_VERSION >= 3
-                PyUnicode_FromString("singular or ill-conditioned basis"));
-#else
-                PyString_FromString("singular or ill-conditioned basis"));
-#endif
-            break;
-
-
         default:
-
             PyTuple_SET_ITEM(t, 0, (PyObject *)
 #if PY_MAJOR_VERSION >= 3
                 PyUnicode_FromString("unknown"));
@@ -793,7 +784,7 @@ static PyObject *integer(PyObject *self, PyObject *args,
 #endif
     }
 
-    lpx_delete_prob(lp);
+    glp_delete_prob(prob);
 
     PyTuple_SET_ITEM(t, 1, Py_BuildValue(""));
     return (PyObject *) t;
